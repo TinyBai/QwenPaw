@@ -156,6 +156,35 @@ def test_supported_versions_from_payload(payload, expected):
     assert _supported_versions_from_payload(payload) == expected
 
 
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            '{"error":{"code":401,"message":"MCP Failure",'
+            '"data":"{\\"error\\":{\\"code\\":-32601,'
+            '\\"message\\":\\"Method not found\\"}}"}}',
+            True,
+        ),
+        (
+            '{"jsonrpc":"2.0","error":{"code":-32601,'
+            '"message":"Method server/discover not found"}}',
+            True,
+        ),
+        (
+            '{"error":{"code":-32601,"message":"Method not found",'
+            '"data":"Method server/discover not found"}}',
+            True,
+        ),
+        ("Unauthorized", False),
+        ('{"error":"authentication_required"}', False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_looks_like_legacy_401(body, expected):
+    assert http_mod._looks_like_legacy_401(body) is expected
+
+
 def test_collect_tool_header_bindings_core_rules():
     ok, err = _collect_tool_header_bindings(
         {
@@ -241,6 +270,31 @@ def test_normalize_call_tool_result_snake_case_aliases():
         lambda r: httpx.Response(405, text=""),
         lambda r: _ok(r, {"supportedVersions": ["2025-11-25"]}),
         lambda r: _err(r, -32601, "Method not found: server/discover"),
+        lambda r: _err(
+            r,
+            -32601,
+            "Method not found: server/discover",
+            status=401,
+        ),
+        lambda r: httpx.Response(
+            401,
+            text=json.dumps(
+                {
+                    "error": {
+                        "code": 401,
+                        "message": "MCP Failure",
+                        "data": json.dumps(
+                            {
+                                "error": {
+                                    "code": -32601,
+                                    "message": "Method not found",
+                                },
+                            },
+                        ),
+                    },
+                },
+            ),
+        ),
         lambda r: _err(r, -32022, "bad", {"supported": ["2025-11-25"]}),
     ],
 )
@@ -271,6 +325,14 @@ async def test_auto_falls_back_once(monkeypatch, make):
     ("make", "exc_type", "match"),
     [
         (lambda r: httpx.Response(401, text="u"), RuntimeError, "OAuth"),
+        (
+            lambda r: httpx.Response(
+                401,
+                text='{"error": "authentication_required"}',
+            ),
+            RuntimeError,
+            "OAuth",
+        ),
         (_transport_error(httpx.ReadTimeout), httpx.ReadTimeout, None),
         (
             lambda r: _err(r, -32020, "header mismatch", status=400),

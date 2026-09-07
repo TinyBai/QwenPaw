@@ -212,6 +212,27 @@ def _is_legacy_protocol_evidence(
     return status_code in {400, 404, 405}
 
 
+_LEGACY_401_MARKERS = (
+    "-32601",
+    "method not found",
+)
+
+
+def _looks_like_legacy_401(body: str) -> bool:
+    """Return True when a 401 body looks like a JSON-RPC method-not-found.
+
+    Some handshake-era MCP gateways (e.g. the pkulaw/北大法宝 endpoints) do
+    not implement the modern ``server/discover`` method and answer it with
+    HTTP 401 whose payload is a JSON-RPC error (code -32601, "Method not
+    found") rather than the conventional 400/404/405 that otherwise triggers
+    the legacy fallback in ``_is_legacy_protocol_evidence``.
+    """
+    if not body:
+        return False
+    lowered = body.lower()
+    return any(marker in lowered for marker in _LEGACY_401_MARKERS)
+
+
 class _ModernCallToolResult(mcp_types.CallToolResult):
     """Accept any JSON structuredContent per MCP 2026-07-28."""
 
@@ -778,7 +799,14 @@ class HttpStatelessClient(_HttpClientBase):
             response_headers = dict(response.headers)
             raw_body = b""
             if status == 401:
-                await response.aread()
+                raw_body = await response.aread()
+                body_text = raw_body.decode("utf-8", errors="replace")
+                if method == "server/discover" and _looks_like_legacy_401(
+                    body_text,
+                ):
+                    # body_text is guaranteed non-empty here: a body with
+                    # no content cannot carry a method-not-found marker.
+                    raise _LegacyProtocolError(body_text)
                 raise RuntimeError(
                     f"MCP client '{self.name}' requires OAuth "
                     "authorization (HTTP 401). Please authorize "
